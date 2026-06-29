@@ -4022,9 +4022,10 @@
                 tempDisp.style.display = 'none';
             }
             saveAll();
-            // Delta de HP: envia apenas os campos alterados
+            // Delta de HP: envia apenas os campos alterados (usa nomes padronizados para o painel: hp, hpMax, tempHP)
             if (currentCharacterIndex !== -1) {
                 publishDelta(currentCharacterIndex, 'hp', char.hitPoints, true);
+                publishDelta(currentCharacterIndex, 'hpMax', char.maxHitPoints, true);
                 publishDelta(currentCharacterIndex, 'tempHP', char.tempHP, true);
             }
         }
@@ -4074,8 +4075,7 @@
             if (!isNaN(max) && max > 0) char.maxHitPoints = max;
             document.getElementById('hp-edit-panel').style.display = 'none';
             updateHPDisplay();
-            // Envia delta de HP máximo também
-            publishDelta(currentCharacterIndex, 'hpMax', char.maxHitPoints, true);
+            // O updateHPDisplay já envia hp e hpMax via publishDelta
         }
 
         // ===== TESTES DE MORTE =====
@@ -5006,8 +5006,8 @@
                 const statusDot = document.getElementById('status-dot');
                 if (statusDot) statusDot.style.background = '#4dff88';
 
-                // Subscrições globais da mesa
-                mqttClient.subscribe(`dnd/mesa/${mesaCodigo}/+`);
+                // Subscrições globais da mesa (# captura todos os níveis abaixo, incluindo deltas)
+                mqttClient.subscribe(`dnd/mesa/${mesaCodigo}/#`);
                 mqttClient.subscribe(`dnd/mesa/${mesaCodigo}/_mestre`);
                 mqttClient.subscribe(`dnd/mesa/${mesaCodigo}/_mestre_heartbeat`);
                 mqttClient.subscribe(`dnd/mesa/${mesaCodigo}/_mestre_order`);
@@ -5105,32 +5105,46 @@
                             const id = btoa(unescape(encodeURIComponent(c.name))).replace(/[/+=]/g, '');
                             return id === playerId;
                         });
-                        if (localIdx !== -1 && data.field && data.value !== undefined) {
-                            // Não sobrescreve se a mensagem for mais antiga que o estado local
-                            const char = allCharacters[localIdx];
-                            if (!char._lastDeltaTs) char._lastDeltaTs = {};
-                            const prevTs = char._lastDeltaTs[data.field] || 0;
-                            if (data.ts > prevTs) {
-                                char[data.field] = data.value;
-                                char._lastDeltaTs[data.field] = data.ts;
-                                saveAll();
-                                // Atualiza a UI se este personagem estiver aberto
-                                if (currentCharacterIndex === localIdx) {
-                                    // Mapear campos de dados para IDs de elementos da ficha
-                                    const fieldToId = {
-                                        'hitPoints': 'charHP',
-                                        'tempHP': 'charTempHP',
-                                        'maxHitPoints': 'charMaxHP'
+                        if (data.field && data.value !== undefined) {
+                            // 1. Atualizar objeto global do painel mestre (jogadoresOnline)
+                            const p = jogadoresOnline[playerId];
+                            if (p) {
+                                p[data.field] = data.value;
+                                p.lastUpdate = Date.now();
+                                if (isMestre) renderMestrePanel();
+                            }
+
+                            // 2. Atualizar personagem local se ele existir (allCharacters)
+                            if (localIdx !== -1) {
+                                const char = allCharacters[localIdx];
+                                if (!char._lastDeltaTs) char._lastDeltaTs = {};
+                                const prevTs = char._lastDeltaTs[data.field] || 0;
+                                
+                                if (data.ts > prevTs) {
+                                    // Mapear campos do painel (hp, hpMax) para campos da ficha (hitPoints, maxHitPoints)
+                                    const panelToFicha = {
+                                        'hp': 'hitPoints',
+                                        'hpMax': 'maxHitPoints',
+                                        'tempHP': 'tempHP'
                                     };
-                                    const elId = fieldToId[data.field] || data.field;
-                                    const el = document.getElementById(elId);
-                                    if (el && el !== document.activeElement) el.value = data.value;
+                                    const fichaField = panelToFicha[data.field] || data.field;
+                                    char[fichaField] = data.value;
+                                    char._lastDeltaTs[data.field] = data.ts;
                                     
-                                    if (['hitPoints', 'maxHitPoints', 'tempHP'].includes(data.field)) updateHPDisplay();
-                                }
-                                if (isMestre) {
-                                    // Se o mestre estiver com um input focado, a renderização inteligente cuidará de não destruir o foco
-                                    renderMestrePanel();
+                                    saveAll();
+                                    
+                                    // Atualiza a UI se este personagem estiver aberto
+                                    if (currentCharacterIndex === localIdx) {
+                                        const fieldToId = {
+                                            'hp': 'charHP',
+                                            'tempHP': 'charTempHP',
+                                            'hpMax': 'charMaxHP'
+                                        };
+                                        const elId = fieldToId[data.field] || data.field;
+                                        const el = document.getElementById(elId);
+                                        if (el && el !== document.activeElement) el.value = data.value;
+                                        if (['hp', 'hpMax', 'tempHP'].includes(data.field)) updateHPDisplay();
+                                    }
                                 }
                             }
                         }
@@ -5248,11 +5262,22 @@
             }
             
             saveAll();
+            
+            // Atualizar UI local se este for o personagem aberto
             if (currentCharacterIndex === idx) {
+                // Atualizar os inputs numéricos para refletir o novo HP
+                const hpInput = document.getElementById('charHP');
+                const tempInput = document.getElementById('charTempHP');
+                if (hpInput) hpInput.value = char.hitPoints;
+                if (tempInput) tempInput.value = char.tempHP;
+                
                 updateHPDisplay();
             }
             
             // Republicar o novo estado para a mesa imediatamente após o comando do mestre
+            // Envia deltas individuais para atualização rápida e snapshot para consistência
+            publishDelta(idx, 'hp', char.hitPoints, true);
+            publishDelta(idx, 'tempHP', char.tempHP, true);
             publishFullSnapshot(idx);
             
             console.log(`Comando remoto recebido: ${cmd.type} de ${amount}`);
